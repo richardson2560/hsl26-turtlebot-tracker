@@ -1,0 +1,58 @@
+# ==========================================
+# DATA AND FILES HACKATHON
+# ==========================================
+data/bags/*
+!data/bags/.gitkeep
+data/outputs/*
+!data/outputs/.gitkeep
+*.mcap
+*.mcap.active
+*.db3
+*.pcd
+*.ply
+
+# ==========================================
+# VIRTUAL ENV / CONDA
+# ==========================================
+venv/
+.venv/
+env/
+.env/
+ENV/
+env.bak/
+venv.bak/
+conda-env/
+*.egg-info/
+
+# ==========================================
+# PYTHON / CACHÉ
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.build/
+build/
+dist/
+sdist/
+wheels/
+
+# ==========================================
+# IDE
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# CONFIG
+# ==========================================
+config/local_*.yaml
+*.log
