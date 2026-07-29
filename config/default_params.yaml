@@ -1,0 +1,42 @@
+preprocessing:
+  voxel_size: 0.03
+  ransac_distance_threshold: 0.08
+  ransac_iterations: 150
+  blind_spot_radius: 0.40
+
+segmentation:
+  azimuth_bins: 720
+  elevation_bins: 180
+  beta_threshold_deg: 10.0
+
+candidate_filter:
+  v_hull_min: 0.01
+  v_hull_max: 0.30
+  solidity_min: 100.0
+  dihedral_rho2p_threshold: 0.9
+  dihedral_angle_min_deg: 60.0
+  dihedral_angle_max_deg: 120.0
+  volumetricity_min: 0.05
+  ext_x_mu: 0.35
+  ext_x_sigma: 0.08
+  ext_y_mu: 0.35
+  ext_y_sigma: 0.08
+  ext_z_mu: 0.40
+  ext_z_sigma: 0.08
+
+registration:
+  surprise_threshold: -10.0
+  outlier_weight: 0.1
+  max_em_iterations: 20
+  von_mises_default_kappa: 2.0
+  von_mises_kappa_min: 0.1
+  von_mises_kappa_max: 50.0
+  robot_v_max: 0.7
+
+tracking:
+  q_var_pos: 0.01
+  q_var_yaw: 0.02
+  r_var_pos: 0.03
+  r_var_yaw: 0.05
+  zupt_variance_threshold: 0.005
+  zupt_window_size: 5
