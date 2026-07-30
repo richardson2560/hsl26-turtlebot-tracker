@@ -1,104 +1,71 @@
 """
-tools/visualize_static_map.py - Visualize static map prior (ground + splats).
-Optionally overlay background points.
+visualize_static_map.py - Unified Auditor.
+OBB Shells are Red Wireframes. Splats are Green Transparent Ellipsoids.
 """
 
-import argparse
 import json
 import numpy as np
 import open3d as o3d
 from pathlib import Path
 
-def create_ellipsoid(mu, scales, R, color, alpha=0.3):
-    sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0)
-    sphere.vertices = o3d.utility.Vector3dVector(np.asarray(sphere.vertices) * scales)
-    sphere.rotate(R, center=(0, 0, 0))
-    sphere.translate(mu)
-    sphere.compute_vertex_normals()
-    sphere.paint_uniform_color(color)
-    return sphere
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--prior", type=str, default="config/static_map_prior.json")
-    parser.add_argument("--background_npz", type=str, default="data/outputs/background_candidate.npz",
-                        help="Background points NPZ (optional)")
-    parser.add_argument("--show_robot", action="store_true",
-                        help="Overlay robot canonical points (if available)")
-    args = parser.parse_args()
-
-    # Load prior
-    with open(args.prior, 'r') as f:
-        data = json.load(f)
-
-    z_ground = data["z_ground"]
-    splats = data.get("splats", [])
-    print(f"Ground Z: {z_ground:.3f} m")
-    print(f"Static splats: {len(splats)}")
+    path = Path("config/static_map_prior.json")
+    if not path.exists():
+        print("[ERROR] JSON not found. Run build_static_map.py first.")
+        return
+        
+    with open(path, 'r') as f: data = json.load(f)
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name="Static Map", width=1280, height=720)
+    vis.create_window(window_name="Expert World Auditor - OBB & Splats", width=1280, height=720)
 
-    # Ground grid
-    grid_size = 6.0
-    grid_pts = np.array([
-        [-grid_size, -grid_size, z_ground],
-        [ grid_size, -grid_size, z_ground],
-        [ grid_size,  grid_size, z_ground],
-        [-grid_size,  grid_size, z_ground]
-    ])
-    grid = o3d.geometry.LineSet()
-    grid.points = o3d.utility.Vector3dVector(grid_pts)
-    grid.lines = o3d.utility.Vector2iVector([[0,1],[1,2],[2,3],[3,0]])
-    grid.paint_uniform_color([0.5, 0.5, 0.5])
+    # 1. Render Debug Points (Audit Colors)
+    if "debug_points" in data:
+        pts = np.array(data["debug_points"])
+        lbls = np.array(data["debug_labels"])
+        pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
+        colors = np.random.uniform(0.4, 1.0, size=(int(lbls.max()) + 1, 3))
+        pcd.colors = o3d.utility.Vector3dVector(colors[lbls])
+        vis.add_geometry(pcd)
+
+    # 2. Render OBB Shells (Red Wireframes)
+    for shell in data.get("shells", []):
+        center = np.array(shell['center'])
+        R = np.array(shell['axes'])
+        extent = np.array(shell['extents']) * 2.0
+        box = o3d.geometry.OrientedBoundingBox(center, R, extent)
+        box.color = [1, 0.2, 0.2]
+        vis.add_geometry(o3d.geometry.LineSet.create_from_oriented_bounding_box(box))
+        
+        # Local Axes
+        l_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1)
+        l_frame.rotate(R, center=(0,0,0)).translate(center)
+        vis.add_geometry(l_frame)
+
+    # 3. Render Static Splats (Green Transparent-style Ellipsoids)
+    for splat in data.get("static_splats", []):
+        mu, v, w = np.array(splat['mu']), np.array(splat['scales']), np.array(splat['rotation'])
+        ellip = o3d.geometry.TriangleMesh.create_sphere(radius=1.0, resolution=10)
+        ellip.vertices = o3d.utility.Vector3dVector(np.asarray(ellip.vertices) * v * 2.0)
+        ellip.rotate(w, center=(0,0,0)).translate(mu)
+        
+        ellip.paint_uniform_color([0.1, 0.5, 0.2])
+        vis.add_geometry(ellip)
+        
+        # Wireframe overlay for transparency effect
+        wire = o3d.geometry.LineSet.create_from_triangle_mesh(ellip)
+        wire.paint_uniform_color([0.2, 1.0, 0.4])
+        vis.add_geometry(wire)
+
+    # 4. Context
+    gz = data['ground']['z']
+    grid = o3d.geometry.LineSet.create_from_oriented_bounding_box(
+        o3d.geometry.OrientedBoundingBox([0,0,gz], np.eye(3), [12, 12, 0.001]))
     vis.add_geometry(grid)
+    vis.add_geometry(o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5))
 
-    # Coordinate frame
-    coord = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
-    vis.add_geometry(coord)
-
-    # Load background points (if provided)
-    bg_path = Path(args.background_npz)
-    if bg_path.exists():
-        data_bg = np.load(bg_path)
-        bg_pts = data_bg["points"]
-        pcd_bg = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(bg_pts))
-        pcd_bg.paint_uniform_color([0.3, 0.3, 0.35])  # Dark gray
-        vis.add_geometry(pcd_bg)
-        print(f"[INFO] Loaded {len(bg_pts):,} background points.")
-    else:
-        print("[INFO] No background NPZ found; only splats and grid shown.")
-
-    # Render splats
-    colors = [
-        [0.6, 0.6, 0.8], [0.7, 0.5, 0.7], [0.5, 0.7, 0.7],
-        [0.6, 0.4, 0.6], [0.4, 0.6, 0.8], [0.8, 0.6, 0.4]
-    ]
-    for i, splat in enumerate(splats):
-        mu = np.array(splat["mu"])
-        scales = np.array(splat["scales"])
-        R = np.array(splat.get("rotation", np.eye(3)))
-        color = colors[i % len(colors)]
-        ellipsoid = create_ellipsoid(mu, scales, R, color, alpha=0.3)
-        vis.add_geometry(ellipsoid)
-        bbox = o3d.geometry.LineSet.create_from_oriented_bounding_box(
-            o3d.geometry.OrientedBoundingBox(center=mu, R=R, extent=scales * 2.0)
-        )
-        bbox.paint_uniform_color(color)
-        vis.add_geometry(bbox)
-
-    # Optionally overlay robot points
-    if args.show_robot:
-        robot_path = Path("config/canonical_points.json")
-        if robot_path.exists():
-            with open(robot_path, 'r') as f:
-                pts_data = json.load(f)
-            pts = np.array(pts_data["canonical_points"])
-            pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
-            pcd.paint_uniform_color([0.2, 0.8, 0.2])  # Green
-            vis.add_geometry(pcd)
-            print("[INFO] Robot reference points overlaid.")
-
+    vis.get_render_option().background_color = np.array([0.02, 0.02, 0.02])
+    vis.get_render_option().point_size = 1.5
     vis.run()
     vis.destroy_window()
 

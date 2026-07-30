@@ -1,17 +1,15 @@
 """
-candidate_filter.py - Adaptive Cascaded Filter and Dihedral Structural Veto for turtlebot_tracker.
-
-Implements adaptive density hull volume/solidity bounds, Pratt/Taubin 2D crescent arc
-fitting rescue for concave point clouds, priority 2-plane dihedric RANSAC structural veto,
-and global volumetricity checks.
+candidate_filter.py - Adaptive Cascaded Filter with Seed Prior.
+v_hull_max is derived from physical robot dimensions (Turtlebot2) by default,
+and optionally refined from canonical model if available and reliable.
 """
 
 import json
-from pathlib import Path
-from typing import List, Tuple
 import numpy as np
 from scipy.spatial import ConvexHull
 import open3d as o3d
+from pathlib import Path
+from typing import List, Tuple
 
 from turtlebot_tracker.datatypes import ClusterCandidate, SemanticLabel
 
@@ -44,46 +42,50 @@ class CandidateFilter:
         self.ext_z_mu = cfg.get("ext_z_mu", 0.42)
         self.ext_z_sigma = cfg.get("ext_z_sigma", 0.18)
 
-        # --- Stage 0.5: Canonical volume bound ---
-        self.v_hull_max = cfg.get("v_hull_max", 0.45)  # fallback
-        self.kappa_vol = cfg.get("kappa_vol", 1.2)
+        # --- SEED PRIOR: Physical dimensions of Turtlebot2 ---
+        # Approximate dimensions: 0.35 x 0.35 x 0.42 m → volume ≈ 0.05145 m³
+        ROBOT_WIDTH = 0.35
+        ROBOT_LENGTH = 0.35
+        ROBOT_HEIGHT = 0.42
+        V_PHYSICAL = ROBOT_WIDTH * ROBOT_LENGTH * ROBOT_HEIGHT  # ≈ 0.05145 m³
 
-        canonical_path = Path("config/canonical_turtlebot2.json")
-        if canonical_path.exists():
+        self.kappa_vol = cfg.get("kappa_vol", 1.5)  # Safety margin (1.5x)
+        self.v_hull_max = V_PHYSICAL * self.kappa_vol  # ≈ 0.077 m³
+        use_prior = "PHYSICAL_SEED"
+
+        # --- Try to refine from canonical model (if reliable) ---
+        points_path = Path("config/canonical_points.json")
+        if points_path.exists():
             try:
-                with open(canonical_path, 'r') as f:
-                    data = json.load(f)
-                # Compute hull volume from canonical points (if available)
-                points_path = Path("config/canonical_points.json")
-                if points_path.exists():
-                    with open(points_path, 'r') as f:
-                        pts_data = json.load(f)
-                    pts = np.array(pts_data["canonical_points"])
-                    if len(pts) > 10:
-                        hull = ConvexHull(pts)
-                        V_canon = float(hull.volume)
-                        self.v_hull_max = self.kappa_vol * V_canon
-                        print(f"[INFO] v_hull_max set from canonical model: {self.v_hull_max:.4f} m³ "
+                with open(points_path, 'r') as f:
+                    pts_data = json.load(f)
+                pts = np.array(pts_data.get("canonical_points", []))
+                if len(pts) > 100:  # Enough points for a meaningful hull
+                    V_canon = float(ConvexHull(pts).volume)
+                    if V_canon > 0.01:  # Sanity check: not a flat plane or noise
+                        self.v_hull_max = V_canon * self.kappa_vol
+                        use_prior = "CANONICAL_MODEL"
+                        print(f"[INFO] v_hull_max from canonical model: {self.v_hull_max:.4f} m³ "
                               f"(κ={self.kappa_vol}, V_canon={V_canon:.4f})")
+                    else:
+                        print(f"[WARN] Canonical volume too small ({V_canon:.4f}). Using physical prior.")
+                else:
+                    print(f"[INFO] Canonical points insufficient ({len(pts)} pts). Using physical prior.")
             except Exception as e:
-                print(f"[WARN] Could not load canonical model: {e}. Using fallback v_hull_max.")
+                print(f"[WARN] Could not load canonical model: {e}. Using physical prior.")
 
-        # Arc rescue
+        if use_prior == "PHYSICAL_SEED":
+            print(f"[INFO] v_hull_max set to PHYSICAL dimensions: {self.v_hull_max:.4f} m³ "
+                  f"(κ={self.kappa_vol}, V_physical={V_PHYSICAL:.4f})")
+
+        # Arc rescue (optional)
         self.taubin_r_min = cfg.get("taubin_radius_min", 0.14)
         self.taubin_r_max = cfg.get("taubin_radius_max", 0.22)
         self.taubin_rms_max = cfg.get("taubin_rms_max", 0.025)
         self.enable_arc_rescue = cfg.get("enable_arc_rescue", False)
 
     def filter_candidates(self, clusters: List[ClusterCandidate]) -> List[ClusterCandidate]:
-        """
-        Evaluates the adaptive cascaded filter on segmented clusters.
-
-        Args:
-            clusters: List of ClusterCandidate dataclass instances.
-
-        Returns:
-            Updated list of ClusterCandidate instances with passed_filters status set.
-        """
+        """Apply adaptive cascaded filter to each cluster."""
         for cand in clusters:
             pts = cand.points
             num_points = len(pts)
@@ -95,7 +97,7 @@ class CandidateFilter:
             # Radial distance to cluster centroid
             r_centroid = float(np.linalg.norm(cand.centroid))
 
-            # 1. Adaptive Hull Bounds
+            # Adaptive hull bounds
             v_min_adaptive = self.v_nominal * (1.0 - np.exp(-self.gamma_vol * num_points / (r_centroid**2 + 1e-6)))
             rho_sol_adaptive = (self.rho_base / (1.0 + np.exp(-(num_points - self.N0) / self.kappa_N))
                                 + self.rho_piso)
@@ -108,21 +110,21 @@ class CandidateFilter:
                 cand.v_hull = 0.02
                 cand.solidity = 30.0
 
-            hull_pass = ((v_min_adaptive <= cand.v_hull <= self.v_hull_max) and
-                         (cand.solidity >= rho_sol_adaptive))
+            # --- Core check: volume must be within [v_min, v_max] ---
+            hull_pass = (v_min_adaptive <= cand.v_hull <= self.v_hull_max) and (cand.solidity >= rho_sol_adaptive)
 
-            # Taubin 2D Crescent Arc Rescue (Fallback for concave clouds)
+            # Taubin 2D Crescent Arc Rescue (fallback for concave clouds)
             _, _, r_fit, rms_fit = self._fit_taubin_circle_2d(pts[:, :2])
             cand.is_arc_valid = ((self.taubin_r_min <= r_fit <= self.taubin_r_max) and
                                  (rms_fit <= self.taubin_rms_max))
 
-            if not hull_pass and cand.is_arc_valid:
-                hull_pass = True  # Rescued by 2D crescent arc geometry
+            if not hull_pass and self.enable_arc_rescue and cand.is_arc_valid:
+                hull_pass = True
 
-            # 2. Priority Dihedric 2-Plane RANSAC Structural Veto
+            # Dihedral 2-plane RANSAC structural veto
             cand.rho_2p, cand.is_corner = self._evaluate_dihedral_test(pts)
 
-            # 3. Global Volumetricity & Soft Extents
+            # Global volumetricity & soft extents
             cov = np.cov(pts.T)
             eigvals = np.linalg.eigvalsh(cov)
             eigvals = np.maximum(eigvals, 1e-6)
@@ -146,15 +148,7 @@ class CandidateFilter:
         return clusters
 
     def _fit_taubin_circle_2d(self, points_2d: np.ndarray) -> Tuple[float, float, float, float]:
-        """
-        Fits a 2D algebraic circle (Kåsa/Pratt method) to the XY projection.
-
-        Args:
-            points_2d: Nx2 float array of XY coordinates.
-
-        Returns:
-            Tuple of (center_a, center_b, radius_fit, rms_residual).
-        """
+        """Fit a 2D algebraic circle (Taubin/Pratt method) to the XY projection."""
         num_points = len(points_2d)
         if num_points < 6:
             return 0.0, 0.0, 0.0, 999.0
@@ -191,12 +185,7 @@ class CandidateFilter:
             return 0.0, 0.0, 0.0, 999.0
 
     def _evaluate_dihedral_test(self, points: np.ndarray) -> Tuple[float, bool]:
-        """
-        Evaluates priority 2-plane RANSAC fit for architectural corners.
-
-        Returns:
-            Tuple of (rho_2p_fraction, is_corner_boolean).
-        """
+        """Evaluate priority 2-plane RANSAC fit for architectural corners."""
         num_points = len(points)
         if num_points < 20:
             return 0.0, False
