@@ -1,42 +1,68 @@
 preprocessing:
   voxel_size: 0.03
   ransac_distance_threshold: 0.08
-  ransac_iterations: 150
-  blind_spot_radius: 0.40
+  ransac_iterations: 100
+  blind_spot_radius: 0.35
+  bg_veto_distance: 0.05
+
+static_map:
+  max_walls: 3
+  bg_veto_distance: 0.05
+  mahalanobis_threshold: 11.34  # χ²(3, 0.99)
+  max_splats: 15
 
 segmentation:
-  azimuth_bins: 720
-  elevation_bins: 180
+  azimuth_bins: 360
+  elevation_bins: 90
   beta_threshold_deg: 10.0
 
 candidate_filter:
-  v_hull_min: 0.01
-  v_hull_max: 0.30
-  solidity_min: 100.0
-  dihedral_rho2p_threshold: 0.9
-  dihedral_angle_min_deg: 60.0
-  dihedral_angle_max_deg: 120.0
-  volumetricity_min: 0.05
-  ext_x_mu: 0.35
-  ext_x_sigma: 0.08
-  ext_y_mu: 0.35
-  ext_y_sigma: 0.08
-  ext_z_mu: 0.40
-  ext_z_sigma: 0.08
+  v_nominal: 0.005
+  gamma_vol: 10.0
+  rho_base: 80.0
+  rho_piso: 10.0
+  N0: 30
+  kappa_N: 5.0
+  kappa_vol: 1.2
+  dihedral_rho2p_threshold: 0.88
+  dihedral_angle_min_deg: 55.0
+  dihedral_angle_max_deg: 125.0
+  volumetricity_min: 0.01
+  taubin_radius_min: 0.14
+  taubin_radius_max: 0.22
+  taubin_rms_max: 0.025
+  ext_x_mu: 0.38
+  ext_x_sigma: 0.15
+  ext_y_mu: 0.38
+  ext_y_sigma: 0.15
+  ext_z_mu: 0.42
+  ext_z_sigma: 0.18
+
+temporal_buffer:
+  window_size: 5
+  min_points_trigger: 30
 
 registration:
-  surprise_threshold: -10.0
-  outlier_weight: 0.1
-  max_em_iterations: 20
-  von_mises_default_kappa: 2.0
-  von_mises_kappa_min: 0.1
-  von_mises_kappa_max: 50.0
-  robot_v_max: 0.7
+  surprise_threshold: -12.0
+  init_high_threshold: -8.0
+  outlier_weight: 0.05
+  max_em_iterations: 8
+  sh_intensity_std: 15.0
+  mahalanobis_trim_chi2: 11.34
+  jump_penalty_weight: 1.5
+  r_max_clamp: 2.5
+
+fsm:
+  max_coasting_time_sec: 3.0
+  klost_trigger: 2
 
 tracking:
-  q_var_pos: 0.01
-  q_var_yaw: 0.02
-  r_var_pos: 0.03
-  r_var_yaw: 0.05
-  zupt_variance_threshold: 0.005
+  q_var_pos: 0.02
+  q_var_yaw: 0.03
+  r_var_pos: 0.02
+  r_var_yaw: 0.04
+  zupt_variance_threshold: 0.008
   zupt_window_size: 5
+  zupt_v_est_threshold: 0.03
+  von_mises_default_kappa: 3.0
+  robot_v_max: 0.7
