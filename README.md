@@ -1,5 +1,3 @@
-
-```markdown
 # TurtleBot Tracker
 
 **3D LiDAR-based detection and tracking of TurtleBot2 in sparse point clouds**
