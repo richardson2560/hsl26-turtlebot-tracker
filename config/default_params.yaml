@@ -51,6 +51,15 @@ registration:
   mahalanobis_trim_chi2: 11.34
   jump_penalty_weight: 1.5
   r_max_clamp: 2.5
+  # GPIS-W parameters
+  h_base: 0.06
+  h_min: 0.015
+  sigma_lidar: 0.012
+  sigma_grad: 0.05
+  max_primitives: 200
+  n_starts: 8
+  surprise_threshold: 0.05   # score threshold for acceptance (energy)
+  max_gn_iterations: 6
 
 fsm:
   max_coasting_time_sec: 3.0

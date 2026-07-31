@@ -67,3 +67,39 @@ def boxes_intersect(box1, box2, margin=0.10):
     # Heuristic: if distance between centers < sum of max dimensions + margin
     threshold = np.max(box1['extents']) + np.max(box2['extents']) + margin
     return dist < threshold
+
+def find_gap_split(coords_1d, bin_width=0.008, min_gap_width=0.015, search_pctile=(0.15, 0.85)):
+    """
+    Encuentra el mayor hueco real de densidad en el rango central.
+    Reemplaza el corte por mediana con un corte basado en el valle físico de la nube.
+    Retorna el centro del hueco si existe y supera min_gap_width, sino retorna None.
+    """
+    if len(coords_1d) < 10:
+        return None
+    lo, hi = np.percentile(coords_1d, [search_pctile[0]*100, search_pctile[1]*100])
+    # Si el rango útil es muy pequeño, no hay hueco significativo
+    if hi - lo < bin_width * 3:
+        return None
+    
+    bins = np.arange(lo, hi + bin_width, bin_width)
+    hist, edges = np.histogram(coords_1d, bins=bins)
+    
+    max_gap_width = 0.0
+    best_center = None
+    
+    i = 0
+    while i < len(hist):
+        if hist[i] == 0:
+            j = i
+            while j < len(hist) and hist[j] == 0:
+                j += 1
+            gap_start = edges[i]
+            gap_end = edges[j]
+            gap_width = gap_end - gap_start
+            if gap_width >= min_gap_width and gap_width > max_gap_width:
+                max_gap_width = gap_width
+                best_center = 0.5 * (gap_start + gap_end)
+            i = j
+        else:
+            i += 1
+    return best_center
