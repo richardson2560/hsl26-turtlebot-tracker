@@ -10,6 +10,7 @@ data/outputs/*
 *.db3
 *.pcd
 *.ply
+*.json
 
 # ==========================================
 # VIRTUAL ENV / CONDA
