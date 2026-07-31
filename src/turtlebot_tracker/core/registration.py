@@ -2,6 +2,7 @@
 registration.py - Direct GMM MAP Registrator with Covariance Rotation & Wilks GLRT.
 """
 
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import numpy as np
@@ -18,7 +19,7 @@ def wrap_to_pi(angle: float) -> float:
 class DirectGMMRegistrator:
     """Direct GMM MAP registrator with Trimmed EM, rotated covariance, and Wilks GLRT."""
 
-    def __init__(self, config: dict, canonical_tree_path: str = "config/canonical_tree.json"):
+    def __init__(self, config: dict, model_path: str = "config/canonical_turtlebot2.json"):
         cfg = config.get("registration", {})
         self.surprise_threshold = cfg.get("surprise_threshold", -12.0)
         self.outlier_weight = cfg.get("outlier_weight", 0.05)
@@ -28,17 +29,25 @@ class DirectGMMRegistrator:
         self.jump_penalty_weight = cfg.get("jump_penalty_weight", 1.5)
         self.r_max_clamp = cfg.get("r_max_clamp", 2.5)
 
-        tree_path = Path(canonical_tree_path)
-        if tree_path.exists():
-            self.hg = HierarchicalGMM.load(tree_path)
-            self.canonical_gmm = self.hg.original
-        else:
-            self.canonical_gmm = [
-                {'mu': [0.0, 0.0, -0.18], 'cov': (np.eye(3) * 0.01).tolist(), 'sh_c0': 28.0, 'weight': 0.35},
-                {'mu': [0.0, 0.0,  0.00], 'cov': (np.eye(3) * 0.01).tolist(), 'sh_c0': 28.0, 'weight': 0.35},
-                {'mu': [0.0, 0.0,  0.20], 'cov': (np.eye(3) * 0.01).tolist(), 'sh_c0': 28.0, 'weight': 0.30}
-            ]
+        path = Path(model_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Model file not found: {path}")
+
+        with open(path, 'r') as f:
+            data = json.load(f)
+
+        # Robust Loader: Detect if it's a Tree (List) or a Flat Model (Dict)
+        if isinstance(data, list):
+            # It's a Hierarchical Tree
+            self.canonical_gmm = data[0] # Level 0 is the original
+            self.hg = HierarchicalGMM([])
+            self.hg.tree = data
+        elif isinstance(data, dict):
+            # It's a flat model
+            self.canonical_gmm = data.get("canonical_gaussians", data.get("gaussians", []))
             self.hg = HierarchicalGMM(self.canonical_gmm)
+        else:
+            raise TypeError("Invalid model format in JSON.")
 
     def register_and_track(
         self, frame_data: FrameData, candidates: List[ClusterCandidate], ekf_tracker
