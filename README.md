@@ -10,7 +10,7 @@ This repository provides a complete pipeline for detecting and tracking a Turtle
 
 - **Offline**: Build a compact implicit surface model (Hermite‑GPIS‑W) of the robot and a static background map from a stationary capture sequence.
 
-![Robot Visualization](docs/images/robot.png)
+<img src="docs/images/robot.png" width="400" alt="Robot Visualization">
 
 - **Online**: Segment incoming LiDAR frames, register the robot model against candidate clusters, and track its pose in SE(2) with a robust EKF.
 
