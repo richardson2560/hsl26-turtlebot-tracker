@@ -9,6 +9,9 @@
 This repository provides a complete pipeline for detecting and tracking a TurtleBot2 robot in real-time using a static LiDAR sensor (Livox MID-360). The system operates in two phases:
 
 - **Offline**: Build a compact implicit surface model (Hermite‑GPIS‑W) of the robot and a static background map from a stationary capture sequence.
+
+![Robot Visualization](docs/images/robot.png)
+
 - **Online**: Segment incoming LiDAR frames, register the robot model against candidate clusters, and track its pose in SE(2) with a robust EKF.
 
 The pipeline is designed for low‑density, non‑repetitive LiDAR patterns and achieves real‑time performance without neural networks or heavy GPU dependencies.
