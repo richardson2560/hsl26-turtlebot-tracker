@@ -44,20 +44,6 @@ class OnlineSegmenter:
         in_box = np.all(np.abs(pts) < stretched_ext, axis=1)
         return in_box
 
-    def _match_static_splat(self, cluster_pts, cluster_centroid):
-        """Checks if a new cluster is actually a known static object from the prior."""
-        if not self.static_splats: return False
-        for splat in self.static_splats:
-            mu = np.array(splat['mu'])
-            dist = np.linalg.norm(cluster_centroid - mu)
-            if dist > 0.4: continue
-            
-            splat_max_scale = np.max(splat['scales'])
-            cluster_max_extent = np.max(np.max(cluster_pts, axis=0) - np.min(cluster_pts, axis=0)) / 2.0
-            if abs(splat_max_scale - cluster_max_extent) < 0.2:
-                return True
-        return False
-
     def classify_and_cluster(self, raw_points):
         # 1. Alignment
         pts_world = (self.R_align @ raw_points.T).T
@@ -119,10 +105,6 @@ class OnlineSegmenter:
             
             if (pts_near_wall / len(c_pts)) > self.iou_threshold:
                 labels[c_indices] = 1
-                continue
-
-            if self._match_static_splat(c_pts, c_centroid):
-                labels[c_indices] = 2
                 continue
 
             potential_clusters.append({

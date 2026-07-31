@@ -17,7 +17,7 @@ def main():
     with open(path, 'r') as f: data = json.load(f)
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name="Expert World Auditor - OBB & Splats", width=1280, height=720)
+    vis.create_window(window_name="OBB static map", width=1280, height=720)
 
     # 1. Render Debug Points (Audit Colors)
     if "debug_points" in data:

@@ -290,7 +290,7 @@ def main():
 
     print("\n[SUCCESS] Static accumulation complete.")
     print("Next steps:")
-    print("  python tools/build_canonical_model.py")
+    print("  python tools/build_implicit_model.py")
     print("  python tools/build_static_map.py")
 
 

@@ -1,6 +1,7 @@
 """
-static_map.py - Static Background Model (Bounded Walls + Splats).
-Supports bounded wall planes (finite rectangles) and infinite planes (ground).
+static_map.py - Static Background Model (Bounded Walls + Ground).
+Splats have been removed entirely.
+Compatible with preprocessor.py (update_from_frame included).
 """
 
 import json
@@ -9,7 +10,6 @@ from typing import List, Optional, Tuple, Dict
 import numpy as np
 import open3d as o3d
 
-from turtlebot_tracker.core.hierarchical_gmm import HierarchicalGMM
 from turtlebot_tracker.datatypes import SemanticLabel, StaticMapPrimitives
 
 
@@ -17,7 +17,7 @@ class StaticBackgroundMap:
     def __init__(self, config: dict):
         cfg = config.get("static_map", {})
         self.delta_bg = cfg.get("bg_veto_distance", 0.05)
-        self.mahalanobis_threshold = cfg.get("mahalanobis_threshold", 11.34)
+        self.mahalanobis_threshold = cfg.get("mahalanobis_threshold", 11.34)  # No usado, se mantiene por compatibilidad
         self.is_initialized = False
 
         # Ground plane (infinite)
@@ -28,11 +28,6 @@ class StaticBackgroundMap:
 
         # Wall planes (bounded)
         self.wall_planes: List[Dict] = []
-
-        # Splats (volumetric structures)
-        self.splats: List[Dict] = []
-        self.hierarchical_gmm: Optional[HierarchicalGMM] = None
-        self.K = 0
 
         self.primitives = StaticMapPrimitives()
 
@@ -49,14 +44,28 @@ class StaticBackgroundMap:
         self.ground_distance = data.get("ground_distance", 0.0)
 
         self.wall_planes = data.get("wall_planes", [])
-        self.splats = data.get("splats", [])
-        if self.splats:
-            self.hierarchical_gmm = HierarchicalGMM(self.splats)
-            self.K = len(self.splats)
 
         self._update_primitives()
         self.is_initialized = True
         return True
+
+    def update_from_frame(self, ground_normal: np.ndarray, ground_distance: float, wall_planes: List[Dict] = None):
+        """
+        Actualiza el mapa estático a partir de un frame individual (modo fallback).
+        Calcula ground_z a partir del plano y almacena los muros (si se proporcionan).
+        """
+        self.ground_normal = np.array(ground_normal, dtype=np.float64)
+        self.ground_distance = float(ground_distance)
+        # Plano: n·p + d = 0 -> z = -d / n_z
+        if abs(self.ground_normal[2]) > 1e-6:
+            self.ground_z = -self.ground_distance / self.ground_normal[2]
+        else:
+            self.ground_z = 0.0
+
+        self.wall_planes = wall_planes if wall_planes is not None else []
+
+        self._update_primitives()
+        self.is_initialized = True
 
     def _update_primitives(self) -> None:
         normals = [self.ground_normal]
@@ -144,20 +153,6 @@ class StaticBackgroundMap:
                 coord_v = np.dot(diff_plane, v)
                 if abs(coord_u) <= half_w and abs(coord_v) <= half_h:
                     bg_mask[idx] = True
-
-        # 3. Splat veto (Mahalanobis)
-        if self.K > 0 and self.splats:
-            mu = np.array([s['mu'] for s in self.splats], dtype=np.float64)
-            dist_min = np.full(N, np.inf, dtype=np.float64)
-            for k in range(self.K):
-                mu_k = mu[k]
-                cov_k = np.array(self.splats[k]['cov'], dtype=np.float64)
-                inv_cov = np.linalg.inv(cov_k + np.eye(3) * 1e-6)
-                diff = points - mu_k
-                maha = np.sum(diff @ inv_cov * diff, axis=1)
-                dist_min = np.minimum(dist_min, maha)
-            structure_mask = dist_min <= self.mahalanobis_threshold
-            bg_mask |= structure_mask
 
         # Labels
         semantic_labels = np.full(N, SemanticLabel.CANDIDATE_FREE, dtype=np.int32)
