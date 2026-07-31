@@ -12,11 +12,11 @@ setup(
         "numpy>=1.24.0,<2.0.0",
         "scipy>=1.10.0",
         "open3d>=0.17.0",
-        "POT>=0.9.0",
         "scikit-learn>=1.2.0",
         "rosbags>=0.9.15",
         "pyyaml>=6.0",
-        "matplotlib>=3.7.0",
-        "tqdm>=4.65.0",
     ],
+    extras_require={
+        "viz": ["scikit-image>=0.19.0"], 
+    },
 )
