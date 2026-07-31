@@ -1,75 +1,70 @@
 """
-tracking.py - EKF on SE(2) with Non-Locking ZUPT Pseudo-Measurements and FSM Lifecycle.
+tracking.py - EKF on SE(2) with aggressive snap-on-target and coasting.
 """
 
+import time
 import numpy as np
-
 from turtlebot_tracker.datatypes import LifecycleState, TrackingState
-
 
 def wrap_to_pi(angle: float) -> float:
     return float(np.arctan2(np.sin(angle), np.cos(angle)))
 
-
 class SE2ManifoldEKF:
-    """Extended Kalman Filter on SE(2) manifold with ZUPT and FSM management."""
-
     def __init__(self, config: dict):
         cfg = config.get("tracking", {})
-        fsm_cfg = config.get("fsm", {})
 
-        self.Q = np.diag(np.array([
-            cfg.get("q_var_pos", 0.02), cfg.get("q_var_pos", 0.02), cfg.get("q_var_yaw", 0.03),
-            0.001, 0.001, 0.001
-        ], dtype=np.float64))
+        self.R_target = np.diag([
+            cfg.get("r_var_pos", 0.01),
+            cfg.get("r_var_pos", 0.01),
+            cfg.get("r_var_yaw", 0.02)
+        ])
+        self.R_low_conf = self.R_target * 5.0
 
-        self.R = np.diag(np.array([
-            cfg.get("r_var_pos", 0.02), cfg.get("r_var_pos", 0.02), cfg.get("r_var_yaw", 0.04)
-        ], dtype=np.float64))
+        self.Q = np.diag([
+            cfg.get("q_var_pos", 0.02),
+            cfg.get("q_var_pos", 0.02),
+            cfg.get("q_var_yaw", 0.03),
+            0.005, 0.005, 0.005
+        ])
 
-        self.zupt_thresh = cfg.get("zupt_variance_threshold", 0.008)
-        self.zupt_window = cfg.get("zupt_window_size", 5)
-        self.zupt_v_thresh = cfg.get("zupt_v_est_threshold", 0.03)
-
-        self.max_coasting_time = fsm_cfg.get("max_coasting_time_sec", 3.0)
-        self.klost_trigger = fsm_cfg.get("klost_trigger", 2)
-
+        # State: [x, y, psi, vx, vy, omega]
         self.x = np.zeros(6, dtype=np.float64)
-        self.P = np.eye(6, dtype=np.float64) * 0.05
+        self.P = np.eye(6, dtype=np.float64) * 0.1
 
-        self.lifecycle_state = LifecycleState.SEARCHING_MAP
+        # Health / Reliability (0-100)
+        self.health = 0
+        self.init_threshold = 20          # Lower threshold for faster lock
         self.is_initialized = False
-        self.is_zupt_active = False
-        self.coasting_time = 0.0
-        self.consecutive_rejected = 0
-        self.nis = 0.0
+        self.lifecycle_state = LifecycleState.SEARCHING_MAP
 
-        self.history_pos = []
+        # Coasting & ZUPT
+        self.is_zupt_active = False
+        self._last_target_time = 0.0
+        self._timeout_duration = 2.0      # seconds before full reset
+
+        # Persistent trajectory (breadcrumbs) – only cleared on full reset
         self.trajectory_log = []
         self.z_log = []
-
-        self.bearing_compass_mu = 0.0
-        self.bearing_compass_kappa = cfg.get("von_mises_default_kappa", 3.0)
-
         self.z_ground = 0.0
-        self.robot_half_height = config.get("tracking", {}).get("z_robot_half_height", 0.24)
+        self.robot_half_height = cfg.get("z_robot_half_height", 0.24)
 
-    def predict(self, dt: float) -> None:
-        if not self.is_initialized or self.lifecycle_state == LifecycleState.SEARCHING_MAP:
+        # For velocity initialization
+        self._prev_measurement = None
+        self._frame_count = 0
+
+    def predict(self, dt: float):
+        """Prediction step (always called when initialized)."""
+        if not self.is_initialized:
             return
 
         psi = self.x[2]
         vx, vy, omega = self.x[3], self.x[4], self.x[5]
 
-        dx = (vx * np.cos(psi) - vy * np.sin(psi)) * dt
-        dy = (vx * np.sin(psi) + vy * np.cos(psi)) * dt
-        dpsi = omega * dt
+        self.x[0] += (vx * np.cos(psi) - vy * np.sin(psi)) * dt
+        self.x[1] += (vx * np.sin(psi) + vy * np.cos(psi)) * dt
+        self.x[2] = wrap_to_pi(self.x[2] + omega * dt)
 
-        self.x[0] += dx
-        self.x[1] += dy
-        self.x[2] = wrap_to_pi(self.x[2] + dpsi)
-
-        F = np.eye(6, dtype=np.float64)
+        F = np.eye(6)
         F[0, 2] = -(vx * np.sin(psi) + vy * np.cos(psi)) * dt
         F[0, 3] = np.cos(psi) * dt
         F[0, 4] = -np.sin(psi) * dt
@@ -80,123 +75,135 @@ class SE2ManifoldEKF:
 
         self.P = F @ self.P @ F.T + self.Q * dt
 
-    def update(self, z_meas: np.ndarray, z_ground: float = 0.0) -> float:
-        self.z_ground = z_ground
+    def update(self, z_meas, is_target=False, score_val=0.0, dt=0.1, timestamp=None):
+        """
+        Update the EKF with a measurement (or None for coasting).
+        Returns True if the state was updated, False otherwise.
+        """
+        self._frame_count += 1
+        now = timestamp if timestamp is not None else time.time()
 
-        if not self.is_initialized:
-            self.x[0:2] = z_meas[0:2]
-            self.x[2] = wrap_to_pi(z_meas[2])
-            self.x[3:6] = 0.0
-            self.is_initialized = True
+        # ---- No measurement: coasting ----
+        if z_meas is None:
+            if self.is_initialized:
+                self.health = max(0, self.health - 5)
+                self.lifecycle_state = LifecycleState.COASTING_LOST
+                if now - self._last_target_time > self._timeout_duration:
+                    self.reset()
+            return False
+
+        # ---- Measurement available ----
+        # KISS rule: if it's a TARGET, we trust it and snap (even if far)
+        if is_target:
+            # Snap: directly set state to measurement
+            self.x[:3] = z_meas
+            self.x[3:] = 0.0
+            self.health = min(100, self.health + 25)
+            self._last_target_time = now
             self.lifecycle_state = LifecycleState.ACTIVE_TRACKING
+            self.is_initialized = True
+            # Log trajectory
             self.trajectory_log.append(self.x[:3].copy())
             self.z_log.append(self.z_ground + self.robot_half_height)
-            return 0.0
+            return True
 
-        y = np.zeros(3, dtype=np.float64)
-        y[0] = z_meas[0] - self.x[0]
-        y[1] = z_meas[1] - self.x[1]
-        y[2] = wrap_to_pi(z_meas[2] - self.x[2])
+        # ---- Non-target (Best-Rejected) measurement ----
+        # Only apply if it's close enough to the prediction (Mahalanobis gate)
+        if self.is_initialized:
+            y = z_meas - self.x[:3]
+            y[2] = wrap_to_pi(y[2])
+            H = np.zeros((3, 6))
+            H[:3, :3] = np.eye(3)
+            S = H @ self.P @ H.T + self.R_low_conf
+            try:
+                inv_S = np.linalg.inv(S)
+                mahal_dist = y.T @ inv_S @ y
+                if mahal_dist > 9.21:   # 99% chi2 for df=3
+                    self.health = max(0, self.health - 5)
+                    return False
+            except np.linalg.LinAlgError:
+                pass
 
-        self.history_pos.append(z_meas[:2].copy())
-        if len(self.history_pos) > self.zupt_window:
-            self.history_pos.pop(0)
+        # Update health
+        self.health = min(100, self.health + 5)
 
-        v_est_norm = np.linalg.norm(self.x[3:5])
-        if v_est_norm < self.zupt_v_thresh and len(self.history_pos) == self.zupt_window:
-            pos_var = np.sum(np.var(self.history_pos, axis=0))
-            if pos_var < self.zupt_thresh:
-                self.is_zupt_active = True
-                self._apply_zupt_pseudo_measurement()
-                self.trajectory_log.append(self.x[:3].copy())
-                self.z_log.append(self.z_ground + self.robot_half_height)
-                self.nis = 0.0
-                return 0.0
+        # Standard Kalman update (only for Best-Rejected or if not initialized)
+        if not self.is_initialized:
+            if self.health > self.init_threshold:
+                self._initialize_state(z_meas)
+                return True
+            return False
 
-        self.is_zupt_active = False
+        H = np.zeros((3, 6))
+        H[:3, :3] = np.eye(3)
+        y = z_meas - self.x[:3]
+        y[2] = wrap_to_pi(y[2])
 
-        H = np.zeros((3, 6), dtype=np.float64)
-        H[0, 0] = 1.0
-        H[1, 1] = 1.0
-        H[2, 2] = 1.0
-
-        S = H @ self.P @ H.T + self.R + np.eye(3) * 1e-6
-        K = self.P @ H.T @ np.linalg.solve(S, np.eye(3))
+        # Use low-confidence R for Best-Rejected
+        S = H @ self.P @ H.T + self.R_low_conf
+        K = self.P @ H.T @ np.linalg.inv(S)
 
         self.x += K @ y
         self.x[2] = wrap_to_pi(self.x[2])
         self.P = (np.eye(6) - K @ H) @ self.P
 
+        # Log trajectory
         self.trajectory_log.append(self.x[:3].copy())
         self.z_log.append(self.z_ground + self.robot_half_height)
-        self.nis = float(y.T @ np.linalg.solve(S, y))
-        return self.nis
 
-    def _apply_zupt_pseudo_measurement(self) -> None:
-        H_v = np.zeros((3, 6), dtype=np.float64)
-        H_v[0, 3] = 1.0
-        H_v[1, 4] = 1.0
-        H_v[2, 5] = 1.0
+        # ZUPT (only if stationary and recently seen)
+        self._apply_zupt()
+        return True
 
-        R_v = np.eye(3, dtype=np.float64) * 0.001
-        S_v = H_v @ self.P @ H_v.T + R_v + np.eye(3) * 1e-6
-        K_v = self.P @ H_v.T @ np.linalg.solve(S_v, np.eye(3))
+    def _initialize_state(self, z_meas):
+        self.x[:3] = z_meas
+        self.x[3:] = 0.0
+        self.is_initialized = True
+        self.lifecycle_state = LifecycleState.ACTIVE_TRACKING
+        self._last_target_time = time.time()
+        self.trajectory_log.append(self.x[:3].copy())
+        self.z_log.append(self.z_ground + self.robot_half_height)
 
-        y_v = -self.x[3:6]
-        self.x += K_v @ y_v
-        self.P = (np.eye(6) - K_v @ H_v) @ self.P
+    def _apply_zupt(self):
+        vel_norm = np.linalg.norm(self.x[3:5])
+        if vel_norm < 0.03 and (time.time() - self._last_target_time) < 1.0:
+            H_v = np.zeros((3, 6))
+            H_v[:, 3:] = np.eye(3)
+            R_v = np.eye(3) * 0.001
+            S_v = H_v @ self.P @ H_v.T + R_v
+            K_v = self.P @ H_v.T @ np.linalg.inv(S_v)
+            self.x += K_v @ (0.0 - self.x[3:])
+            self.P = (np.eye(6) - K_v @ H_v) @ self.P
+            self.is_zupt_active = True
+        else:
+            self.is_zupt_active = False
 
-    def update_lifecycle(self, detection_accepted: bool, dt: float) -> None:
-        if self.lifecycle_state == LifecycleState.SEARCHING_MAP:
-            if detection_accepted:
-                self.lifecycle_state = LifecycleState.ACTIVE_TRACKING
-                self.consecutive_rejected = 0
-                self.coasting_time = 0.0
-            return
-
-        if self.lifecycle_state == LifecycleState.ACTIVE_TRACKING:
-            if detection_accepted:
-                self.consecutive_rejected = 0
-                self.coasting_time = 0.0
-            else:
-                self.consecutive_rejected += 1
-                if self.consecutive_rejected >= self.klost_trigger:
-                    self.lifecycle_state = LifecycleState.COASTING_LOST
-
-        elif self.lifecycle_state == LifecycleState.COASTING_LOST:
-            if detection_accepted:
-                self.lifecycle_state = LifecycleState.ACTIVE_TRACKING
-                self.consecutive_rejected = 0
-                self.coasting_time = 0.0
-            else:
-                self.coasting_time += dt
-                if self.coasting_time > self.max_coasting_time:
-                    self.reset_to_searching()
-
-    def reset_to_searching(self) -> None:
-        self.lifecycle_state = LifecycleState.SEARCHING_MAP
+    def reset(self):
+        """Full reset: clears state, trajectory, and returns to SEARCHING."""
         self.is_initialized = False
-        self.is_zupt_active = False
-        self.coasting_time = 0.0
-        self.consecutive_rejected = 0
-        self.x.fill(0.0)
-        self.P = np.eye(6, dtype=np.float64) * 0.05
-        self.history_pos.clear()
+        self.lifecycle_state = LifecycleState.SEARCHING_MAP
+        self.health = 0
+        self.x.fill(0)
+        self.P = np.eye(6) * 0.1
+        self.trajectory_log = []
+        self.z_log = []
+        self._prev_measurement = None
+        self._last_target_time = 0.0
 
     def get_state(self) -> TrackingState:
-        z_abs = self.z_ground + self.robot_half_height
         return TrackingState(
             pose_se2=self.x[:3].copy(),
             velocity_se2=self.x[3:].copy(),
             covariance=self.P.copy(),
-            z=z_abs,
+            z=self.z_ground + self.robot_half_height,
             lifecycle_state=self.lifecycle_state,
             is_zupt_active=self.is_zupt_active,
             surprise_triggered=(self.lifecycle_state == LifecycleState.COASTING_LOST),
-            coasting_time=self.coasting_time,
-            bearing_compass_kappa=self.bearing_compass_kappa,
-            bearing_compass_mu=self.bearing_compass_mu,
+            coasting_time=0.0,
+            bearing_compass_kappa=0.0,
+            bearing_compass_mu=0.0,
             trajectory_history=list(self.trajectory_log),
             z_log=list(self.z_log),
-            nis=self.nis
+            nis=0.0,
+            reliability_score=self.health   # Expose health as reliability_score
         )
