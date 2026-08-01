@@ -160,6 +160,14 @@ Calibrate these values against your own bag data for best performance.
 
 ---
 
+## Documentation
+
+For a comprehensive explanation of the system architecture, design decisions, and the rationale behind the chosen algorithms (including problem constraints, offline/online strategy breakdown, and future work), please refer to the full design document:
+
+👉 **[Design Overview](docs/DESIGN_OVERVIEW.md)**
+
+---
+
 ## Outputs
 
 ### Offline outputs
@@ -199,4 +207,3 @@ The implementation is self‑contained, uses no deep‑learning frameworks, and 
 ## License
 
 [MIT](LICENSE) – feel free to use and modify for your own research or applications.
-```
